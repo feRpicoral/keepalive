@@ -1,0 +1,68 @@
+name: keepalive
+
+on:
+  workflow_call:
+    inputs:
+      stale-days:
+        description: Only act when the latest commit is older than this many days.
+        type: number
+        default: 50
+      commit-message:
+        description: Message for the empty keepalive commit.
+        type: string
+        default: "chore: keepalive"
+      pr-title:
+        description: Title for the keepalive pull request.
+        type: string
+        default: "chore: keepalive"
+      pr-body:
+        description: Body for the keepalive pull request.
+        type: string
+        default: Automated empty commit so scheduled workflows are not disabled after 60 days of inactivity.
+      branch-prefix:
+        description: Prefix for the temporary keepalive branch.
+        type: string
+        default: keepalive
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Merge a keepalive commit when the repository is stale
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STALE_DAYS: ${{ inputs.stale-days }}
+          COMMIT_MESSAGE: ${{ inputs.commit-message }}
+          PR_TITLE: ${{ inputs.pr-title }}
+          PR_BODY: ${{ inputs.pr-body }}
+          BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        run: |
+          set -euo pipefail
+
+          age_days=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Latest commit is ${age_days} day(s) old; threshold is ${STALE_DAYS} day(s)."
+
+          if (( age_days <= STALE_DAYS )); then
+            echo "Repository is active; nothing to do."
+            exit 0
+          fi
+
+          base_branch="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')"
+          work_branch="${BRANCH_PREFIX}/${GITHUB_RUN_ID}"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git switch --create "$work_branch"
+          git commit --allow-empty --message "$COMMIT_MESSAGE"
+          git push origin "$work_branch"
+
+          gh pr create --base "$base_branch" --head "$work_branch" --title "$PR_TITLE" --body "$PR_BODY"
+          gh pr merge "$work_branch" --merge --delete-branch
+          echo "Merged a keepalive commit into ${base_branch}."
